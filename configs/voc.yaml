@@ -1,0 +1,34 @@
+dataset:
+  name: pascal_voc
+  root: data/raw/VOCdevkit
+
+  train:
+    - VOC2007
+    - VOC2012
+
+  test:
+    - VOC2007
+
+  num_classes: 20
+
+classes:
+  - aeroplane
+  - bicycle
+  - bird
+  - boat
+  - bottle
+  - bus
+  - car
+  - cat
+  - chair
+  - cow
+  - diningtable
+  - dog
+  - horse
+  - motorbike
+  - person
+  - pottedplant
+  - sheep
+  - sofa
+  - train
+  - tvmonitor
