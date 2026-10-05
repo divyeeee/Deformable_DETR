@@ -3,11 +3,15 @@ dataset:
   root: data/raw/VOCdevkit
 
   train:
-    - VOC2007
-    - VOC2012
+    years:
+      - "2007"
+      - "2012"
+    image_set: trainval
 
   test:
-    - VOC2007
+    years:
+      - "2007"
+    image_set: test
 
   num_classes: 20
 

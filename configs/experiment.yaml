@@ -1,0 +1,32 @@
+dataset:
+  train: VOC2007 trainval + VOC2012 trainval
+  test: VOC2007 test
+  num_classes: 20
+
+training:
+  seeds:
+    - 42
+    - 43
+    - 44
+  epochs: 10
+  batch_size: 4
+  num_workers: 2
+  weight_decay: 0.0001
+
+optimizers:
+  faster_rcnn:
+    name: SGD
+    lr: 0.005
+    momentum: 0.9
+  detr:
+    name: AdamW
+    lr: 0.0001
+    backbone_lr: 0.00001
+  deformable_detr:
+    name: AdamW
+    lr: 0.0001
+    backbone_lr: 0.00001
+
+logging:
+  wandb_project: cs747-final-23dcs007
+  save_checkpoints: true

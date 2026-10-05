@@ -1,0 +1,20 @@
+name: detr_project
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pyyaml
+  - pillow
+  - pytest
+  - pip:
+      - torch
+      - torchvision
+      - transformers
+      - timm
+      - pycocotools
+      - wandb

@@ -10,6 +10,7 @@ data/processed/
 checkpoints/
 results/logs/
 results/predictions/
+wandb/
 
 *.pt
 *.pth
