@@ -218,7 +218,7 @@ def prepare_batch(model_type, images, targets, device):
         raise ValueError(f"Unknown model_type: {model_type}")
 
 
-def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch=0):
+def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch=0, max_batches=None):
     """
     Train model for one epoch.
     """
@@ -233,6 +233,9 @@ def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch
     start_time = time.time()
 
     for images, targets in dataloader:
+        if max_batches is not None and num_batches >= max_batches:
+            break
+
         optimizer.zero_grad()
         inputs, formatted_targets = prepare_batch(model_type, images, targets, device)
 
@@ -262,7 +265,7 @@ def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch
     return avg_loss, elapsed
 
 
-def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0):
+def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0, max_batches=None):
     """
     Evaluate model for one epoch and return COCO mAP metrics.
     """
@@ -274,9 +277,13 @@ def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0):
 
     evaluator = COCOEvaluator()
     start_time = time.time()
+    num_batches = 0
 
     with torch.no_grad():
         for images, targets in dataloader:
+            if max_batches is not None and num_batches >= max_batches:
+                break
+
             inputs, _ = prepare_batch(model_type, images, targets, device)
 
             preds_formatted = []
@@ -318,6 +325,7 @@ def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0):
                     })
 
             evaluator.update(preds_formatted, targets)
+            num_batches += 1
 
     metrics = evaluator.evaluate()
     elapsed = time.time() - start_time
@@ -330,6 +338,7 @@ def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0):
     }, step=epoch)
 
     return metrics, elapsed
+
 
 
 def save_checkpoint(model, optimizer, epoch, filepath, metrics=None):

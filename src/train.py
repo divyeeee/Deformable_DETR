@@ -93,6 +93,12 @@ def parse_args():
         choices=["online", "offline", "disabled"],
         help="W&B logging mode",
     )
+    parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="Maximum number of batches to process per epoch (default: None)",
+    )
     return parser.parse_args()
 
 
@@ -116,7 +122,7 @@ def main():
     device = get_device()
     print(f"Device: {device}")
     print(f"Model: {args.model}")
-    print(f"Seed: {seed}, Epochs: {epochs}, Batch Size: {batch_size}, Num Workers: {num_workers}")
+    print(f"Seed: {seed}, Epochs: {epochs}, Batch Size: {batch_size}, Num Workers: {num_workers}, Max Batches: {args.max_batches}")
 
     run_name = f"{args.model}_seed{seed}"
     init_run(
@@ -163,6 +169,7 @@ def main():
             model_type=args.model,
             device=device,
             epoch=epoch,
+            max_batches=args.max_batches,
         )
 
         eval_metrics, eval_time = evaluate_one_epoch(
@@ -171,7 +178,9 @@ def main():
             model_type=args.model,
             device=device,
             epoch=epoch,
+            max_batches=args.max_batches,
         )
+
 
         val_map = eval_metrics.get("AP", 0.0)
         print(f"Epoch {epoch} Results - Train Loss: {train_loss:.4f}, Val mAP: {val_map:.4f}")
