@@ -19,6 +19,7 @@ from src.training.engine import (
     train_one_epoch,
     evaluate_one_epoch,
     save_checkpoint,
+    load_checkpoint,
     build_optimizer_from_config,
     get_device,
 )
@@ -99,6 +100,18 @@ def parse_args():
         default=None,
         help="Maximum number of batches to process per epoch (default: None)",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint file to resume training from",
+    )
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=1,
+        help="Evaluation interval in epochs (default: 1)",
+    )
     return parser.parse_args()
 
 
@@ -116,13 +129,14 @@ def main():
     epochs = args.epochs if args.epochs is not None else train_cfg.get("epochs", 10)
     batch_size = args.batch_size if args.batch_size is not None else train_cfg.get("batch_size", 4)
     num_workers = args.num_workers if args.num_workers is not None else train_cfg.get("num_workers", 2)
+    eval_interval = args.eval_interval if args.eval_interval is not None else train_cfg.get("eval_interval", 1)
     num_classes = ds_cfg.get("num_classes", 20)
 
     set_seed(seed)
     device = get_device()
     print(f"Device: {device}")
     print(f"Model: {args.model}")
-    print(f"Seed: {seed}, Epochs: {epochs}, Batch Size: {batch_size}, Num Workers: {num_workers}, Max Batches: {args.max_batches}")
+    print(f"Seed: {seed}, Epochs: {epochs}, Batch Size: {batch_size}, Num Workers: {num_workers}, Eval Interval: {eval_interval}, Max Batches: {args.max_batches}")
 
     run_name = f"{args.model}_seed{seed}"
     init_run(
@@ -157,10 +171,21 @@ def main():
     optimizer = build_optimizer_from_config(model, args.model, exp_config)
 
     os.makedirs(args.save_dir, exist_ok=True)
+    start_epoch = 1
     best_map = 0.0
 
+    if args.resume:
+        print(f"Resuming training from checkpoint: {args.resume}")
+        resumed_epoch, last_metrics = load_checkpoint(args.resume, model, optimizer)
+        start_epoch = resumed_epoch + 1
+        best_map = last_metrics.get("AP", 0.0)
+        print(f"Resumed from epoch {resumed_epoch}. Next epoch: {start_epoch} (Best mAP so far: {best_map:.4f})")
+
+    latest_ckpt_name = f"{args.model}_seed{seed}_latest.pth"
+    best_ckpt_name = f"{args.model}_seed{seed}_best.pth"
+
     print("Starting training loop...")
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         print(f"\n--- Epoch {epoch}/{epochs} ---")
         train_loss, train_time = train_one_epoch(
             model=model,
@@ -172,21 +197,25 @@ def main():
             max_batches=args.max_batches,
         )
 
-        eval_metrics, eval_time = evaluate_one_epoch(
-            model=model,
-            dataloader=test_loader,
-            model_type=args.model,
-            device=device,
-            epoch=epoch,
-            max_batches=args.max_batches,
-        )
+        should_eval = (epoch % eval_interval == 0) or (epoch == epochs)
+        eval_metrics = {}
 
+        if should_eval:
+            eval_metrics, eval_time = evaluate_one_epoch(
+                model=model,
+                dataloader=test_loader,
+                model_type=args.model,
+                device=device,
+                epoch=epoch,
+                max_batches=args.max_batches,
+            )
+            val_map = eval_metrics.get("AP", 0.0)
+            print(f"Epoch {epoch} Results - Train Loss: {train_loss:.4f}, Val mAP: {val_map:.4f}")
+        else:
+            print(f"Epoch {epoch} Results - Train Loss: {train_loss:.4f} (Evaluation skipped for interval={eval_interval})")
 
-        val_map = eval_metrics.get("AP", 0.0)
-        print(f"Epoch {epoch} Results - Train Loss: {train_loss:.4f}, Val mAP: {val_map:.4f}")
-
-        # Save checkpoint
-        checkpoint_path = os.path.join(args.save_dir, f"{args.model}_latest.pth")
+        # Save latest checkpoint
+        checkpoint_path = os.path.join(args.save_dir, latest_ckpt_name)
         save_checkpoint(
             model=model,
             optimizer=optimizer,
@@ -195,9 +224,9 @@ def main():
             metrics=eval_metrics,
         )
 
-        if val_map > best_map:
+        if should_eval and val_map > best_map:
             best_map = val_map
-            best_ckpt_path = os.path.join(args.save_dir, f"{args.model}_best.pth")
+            best_ckpt_path = os.path.join(args.save_dir, best_ckpt_name)
             save_checkpoint(
                 model=model,
                 optimizer=optimizer,
@@ -211,5 +240,7 @@ def main():
     print("\nTraining completed successfully!")
 
 
+
 if __name__ == "__main__":
     main()
+
