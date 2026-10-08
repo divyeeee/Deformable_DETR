@@ -176,10 +176,11 @@ def main():
 
     if args.resume:
         print(f"Resuming training from checkpoint: {args.resume}")
-        resumed_epoch, last_metrics = load_checkpoint(args.resume, model, optimizer)
+        resumed_epoch, last_metrics = load_checkpoint(args.resume, model, optimizer, device=device)
         start_epoch = resumed_epoch + 1
         best_map = last_metrics.get("AP", 0.0)
         print(f"Resumed from epoch {resumed_epoch}. Next epoch: {start_epoch} (Best mAP so far: {best_map:.4f})")
+
 
     latest_ckpt_name = f"{args.model}_seed{seed}_latest.pth"
     best_ckpt_name = f"{args.model}_seed{seed}_best.pth"

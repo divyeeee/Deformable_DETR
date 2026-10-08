@@ -355,9 +355,10 @@ def save_checkpoint(model, optimizer, epoch, filepath, metrics=None):
     torch.save(state, filepath)
 
 
-def load_checkpoint(filepath, model, optimizer=None):
+def load_checkpoint(filepath, model, optimizer=None, device=None):
     """
     Load checkpoint dictionary from disk into model and optional optimizer.
+    Move all optimizer state tensors to the specified target device.
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Checkpoint not found at: {filepath}")
@@ -365,4 +366,14 @@ def load_checkpoint(filepath, model, optimizer=None):
     model.load_state_dict(checkpoint["model_state_dict"])
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if device is None:
+            try:
+                device = next(model.parameters()).device
+            except StopIteration:
+                device = get_device()
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
     return checkpoint.get("epoch", 0), checkpoint.get("metrics", {})
+
