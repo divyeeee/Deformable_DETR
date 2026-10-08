@@ -218,15 +218,19 @@ def prepare_batch(model_type, images, targets, device):
         raise ValueError(f"Unknown model_type: {model_type}")
 
 
-def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch=0, max_batches=None):
+def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch=0, max_batches=None, scaler=None):
     """
-    Train model for one epoch.
+    Train model for one epoch using optional CUDA mixed precision.
     """
     if device is None:
         device = get_device()
 
     model.to(device)
     model.train()
+
+    is_cuda = (device.type == "cuda")
+    if is_cuda and scaler is None:
+        scaler = torch.amp.GradScaler("cuda")
 
     total_loss = 0.0
     num_batches = 0
@@ -239,15 +243,21 @@ def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch
         optimizer.zero_grad()
         inputs, formatted_targets = prepare_batch(model_type, images, targets, device)
 
-        if model_type == "faster_rcnn":
-            loss_dict = model(inputs, formatted_targets)
-            losses = sum(loss for loss in loss_dict.values())
-        else:
-            outputs = model(pixel_values=inputs, labels=formatted_targets)
-            losses = outputs.loss
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=is_cuda):
+            if model_type == "faster_rcnn":
+                loss_dict = model(inputs, formatted_targets)
+                losses = sum(loss for loss in loss_dict.values())
+            else:
+                outputs = model(pixel_values=inputs, labels=formatted_targets)
+                losses = outputs.loss
 
-        losses.backward()
-        optimizer.step()
+        if is_cuda and scaler is not None and scaler.is_enabled():
+            scaler.scale(losses).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            losses.backward()
+            optimizer.step()
 
         total_loss += losses.item()
         num_batches += 1
@@ -278,6 +288,7 @@ def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0, max_
     evaluator = COCOEvaluator()
     start_time = time.time()
     num_batches = 0
+    is_cuda = (device.type == "cuda")
 
     with torch.no_grad():
         for images, targets in dataloader:
@@ -288,41 +299,42 @@ def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0, max_
 
             preds_formatted = []
 
-            if model_type == "faster_rcnn":
-                outputs = model(inputs)
-                for out in outputs:
-                    preds_formatted.append({
-                        "boxes": out["boxes"].cpu(),
-                        "scores": out["scores"].cpu(),
-                        "labels": (out["labels"] - 1).cpu(),  # Shift back to 0-based
-                    })
-            else:
-                outputs = model(pixel_values=inputs)
-                logits = outputs.logits.cpu()
-                pred_boxes = outputs.pred_boxes.cpu()
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=is_cuda):
+                if model_type == "faster_rcnn":
+                    outputs = model(inputs)
+                    for out in outputs:
+                        preds_formatted.append({
+                            "boxes": out["boxes"].cpu(),
+                            "scores": out["scores"].cpu(),
+                            "labels": (out["labels"] - 1).cpu(),  # Shift back to 0-based
+                        })
+                else:
+                    outputs = model(pixel_values=inputs)
+                    logits = outputs.logits.cpu()
+                    pred_boxes = outputs.pred_boxes.cpu()
 
-                for i, (log, box) in enumerate(zip(logits, pred_boxes)):
-                    probs = torch.softmax(log, dim=-1)
-                    scores, labels = probs[:, :-1].max(dim=-1)
+                    for i, (log, box) in enumerate(zip(logits, pred_boxes)):
+                        probs = torch.softmax(log, dim=-1)
+                        scores, labels = probs[:, :-1].max(dim=-1)
 
-                    keep = scores > 0.05
-                    scores_k = scores[keep]
-                    labels_k = labels[keep]
-                    box_k = box[keep]
+                        keep = scores > 0.05
+                        scores_k = scores[keep]
+                        labels_k = labels[keep]
+                        box_k = box[keep]
 
-                    h_val, w_val = targets[i]["size"][0].item(), targets[i]["size"][1].item()
-                    cx, cy, bw, bh = box_k.unbind(-1)
-                    xmin = (cx - 0.5 * bw) * w_val
-                    ymin = (cy - 0.5 * bh) * h_val
-                    xmax = (cx + 0.5 * bw) * w_val
-                    ymax = (cy + 0.5 * bh) * h_val
-                    boxes_xyxy = torch.stack([xmin, ymin, xmax, ymax], dim=-1)
+                        h_val, w_val = targets[i]["size"][0].item(), targets[i]["size"][1].item()
+                        cx, cy, bw, bh = box_k.unbind(-1)
+                        xmin = (cx - 0.5 * bw) * w_val
+                        ymin = (cy - 0.5 * bh) * h_val
+                        xmax = (cx + 0.5 * bw) * w_val
+                        ymax = (cy + 0.5 * bh) * h_val
+                        boxes_xyxy = torch.stack([xmin, ymin, xmax, ymax], dim=-1)
 
-                    preds_formatted.append({
-                        "boxes": boxes_xyxy,
-                        "scores": scores_k,
-                        "labels": labels_k,
-                    })
+                        preds_formatted.append({
+                            "boxes": boxes_xyxy,
+                            "scores": scores_k,
+                            "labels": labels_k,
+                        })
 
             evaluator.update(preds_formatted, targets)
             num_batches += 1
@@ -340,8 +352,7 @@ def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0, max_
     return metrics, elapsed
 
 
-
-def save_checkpoint(model, optimizer, epoch, filepath, metrics=None):
+def save_checkpoint(model, optimizer, epoch, filepath, metrics=None, scaler=None):
     """
     Save checkpoint dictionary to disk.
     """
@@ -352,12 +363,14 @@ def save_checkpoint(model, optimizer, epoch, filepath, metrics=None):
         "optimizer_state_dict": optimizer.state_dict(),
         "metrics": metrics or {},
     }
+    if scaler is not None and hasattr(scaler, "state_dict"):
+        state["scaler_state_dict"] = scaler.state_dict()
     torch.save(state, filepath)
 
 
-def load_checkpoint(filepath, model, optimizer=None, device=None):
+def load_checkpoint(filepath, model, optimizer=None, device=None, scaler=None):
     """
-    Load checkpoint dictionary from disk into model and optional optimizer.
+    Load checkpoint dictionary from disk into model, optional optimizer, and optional GradScaler.
     Move all optimizer state tensors to the specified target device.
     """
     if not os.path.exists(filepath):
@@ -375,5 +388,8 @@ def load_checkpoint(filepath, model, optimizer=None, device=None):
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(device)
+    if scaler is not None and "scaler_state_dict" in checkpoint and hasattr(scaler, "load_state_dict"):
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
     return checkpoint.get("epoch", 0), checkpoint.get("metrics", {})
+
 

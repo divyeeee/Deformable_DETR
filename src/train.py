@@ -169,6 +169,7 @@ def main():
     model = builder(num_classes=num_classes, pretrained=True)
 
     optimizer = build_optimizer_from_config(model, args.model, exp_config)
+    scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
 
     os.makedirs(args.save_dir, exist_ok=True)
     start_epoch = 1
@@ -176,11 +177,10 @@ def main():
 
     if args.resume:
         print(f"Resuming training from checkpoint: {args.resume}")
-        resumed_epoch, last_metrics = load_checkpoint(args.resume, model, optimizer, device=device)
+        resumed_epoch, last_metrics = load_checkpoint(args.resume, model, optimizer, device=device, scaler=scaler)
         start_epoch = resumed_epoch + 1
         best_map = last_metrics.get("AP", 0.0)
         print(f"Resumed from epoch {resumed_epoch}. Next epoch: {start_epoch} (Best mAP so far: {best_map:.4f})")
-
 
     latest_ckpt_name = f"{args.model}_seed{seed}_latest.pth"
     best_ckpt_name = f"{args.model}_seed{seed}_best.pth"
@@ -196,6 +196,7 @@ def main():
             device=device,
             epoch=epoch,
             max_batches=args.max_batches,
+            scaler=scaler,
         )
 
         should_eval = (epoch % eval_interval == 0) or (epoch == epochs)
@@ -223,6 +224,7 @@ def main():
             epoch=epoch,
             filepath=checkpoint_path,
             metrics=eval_metrics,
+            scaler=scaler,
         )
 
         if should_eval and val_map > best_map:
@@ -234,8 +236,10 @@ def main():
                 epoch=epoch,
                 filepath=best_ckpt_path,
                 metrics=eval_metrics,
+                scaler=scaler,
             )
             print(f"Saved new best model checkpoint to {best_ckpt_path} (mAP: {best_map:.4f})")
+
 
     finish_run()
     print("\nTraining completed successfully!")
