@@ -7,11 +7,16 @@ dataset:
       - "2007"
       - "2012"
     image_set: trainval
+    min_size: 600
+    max_size: 1333
 
   test:
     years:
       - "2007"
     image_set: test
+    min_size: 800
+    max_size: 1333
+
 
   num_classes: 20
 

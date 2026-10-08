@@ -99,7 +99,7 @@ class Normalize:
         return image, target
 
 
-def get_train_transforms(min_size=800, max_size=1333):
+def get_train_transforms(min_size=600, max_size=1333):
     return Compose([
         Resize(min_size=min_size, max_size=max_size),
         RandomHorizontalFlip(),
@@ -114,3 +114,4 @@ def get_test_transforms(min_size=800, max_size=1333):
         ToTensor(),
         Normalize(),
     ])
+

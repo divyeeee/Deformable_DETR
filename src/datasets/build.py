@@ -24,12 +24,14 @@ def build_train_dataset(config_path="configs/voc.yaml"):
     train_cfg = cfg.get("train", {})
     years = train_cfg.get("years", ["2007", "2012"])
     image_set = train_cfg.get("image_set", "trainval")
+    min_size = train_cfg.get("min_size", 600)
+    max_size = train_cfg.get("max_size", 1333)
 
     return VOCDataset(
         root=root,
         year=years,
         image_set=image_set,
-        transforms=get_train_transforms()
+        transforms=get_train_transforms(min_size=min_size, max_size=max_size)
     )
 
 
@@ -42,13 +44,16 @@ def build_test_dataset(config_path="configs/voc.yaml"):
     test_cfg = cfg.get("test", {})
     years = test_cfg.get("years", ["2007"])
     image_set = test_cfg.get("image_set", "test")
+    min_size = test_cfg.get("min_size", 800)
+    max_size = test_cfg.get("max_size", 1333)
 
     return VOCDataset(
         root=root,
         year=years,
         image_set=image_set,
-        transforms=get_test_transforms()
+        transforms=get_test_transforms(min_size=min_size, max_size=max_size)
     )
+
 
 
 def build_dataloader(dataset, batch_size=4, num_workers=2, shuffle=False):
