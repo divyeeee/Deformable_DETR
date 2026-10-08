@@ -56,17 +56,25 @@ def build_test_dataset(config_path="configs/voc.yaml"):
 
 
 
-def build_dataloader(dataset, batch_size=4, num_workers=2, shuffle=False):
+def build_dataloader(dataset, batch_size=4, num_workers=2, shuffle=False, use_cuda=False):
     """
     Build PyTorch DataLoader using custom collate_fn for variable box target tuples.
+
+    When use_cuda=True, enables pin_memory for faster CPU→GPU transfers.
+    When num_workers > 0, enables persistent_workers and prefetch_factor=2.
     """
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        collate_fn=collate_fn
-    )
+    loader_kwargs = {
+        "dataset": dataset,
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "collate_fn": collate_fn,
+        "pin_memory": use_cuda,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+    return DataLoader(**loader_kwargs)
 
 
 if __name__ == "__main__":

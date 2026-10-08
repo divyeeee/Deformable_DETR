@@ -151,17 +151,20 @@ def main():
     train_dataset = build_train_dataset()
     test_dataset = build_test_dataset()
 
+    use_cuda = (device.type == "cuda")
     train_loader = build_dataloader(
         train_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
         shuffle=True,
+        use_cuda=use_cuda,
     )
     test_loader = build_dataloader(
         test_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
         shuffle=False,
+        use_cuda=use_cuda,
     )
 
     print(f"Building model '{args.model}' (num_classes={num_classes})...")

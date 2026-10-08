@@ -165,17 +165,20 @@ def build_optimizer_from_config(model, model_type, config):
 def prepare_batch(model_type, images, targets, device):
     """
     Format images and targets for the specific model type.
+    Uses non_blocking=True for asynchronous CPU→GPU transfers when pin_memory is enabled.
     """
+    nb = (device.type == "cuda")
+
     if model_type == "faster_rcnn":
-        images_dev = [img.to(device) for img in images]
+        images_dev = [img.to(device, non_blocking=nb) for img in images]
         targets_dev = []
         for t in targets:
             t_dev = {
-                "boxes": t["boxes"].to(device),
-                "labels": (t["labels"] + 1).to(device),  # 1-based for torchvision Faster R-CNN
-                "image_id": t["image_id"].to(device),
-                "area": t["area"].to(device),
-                "iscrowd": t["iscrowd"].to(device),
+                "boxes": t["boxes"].to(device, non_blocking=nb),
+                "labels": (t["labels"] + 1).to(device, non_blocking=nb),  # 1-based for torchvision Faster R-CNN
+                "image_id": t["image_id"].to(device, non_blocking=nb),
+                "area": t["area"].to(device, non_blocking=nb),
+                "iscrowd": t["iscrowd"].to(device, non_blocking=nb),
             }
             targets_dev.append(t_dev)
         return images_dev, targets_dev
@@ -188,13 +191,13 @@ def prepare_batch(model_type, images, targets, device):
         pixel_values = torch.zeros((batch_size, 3, max_h, max_w), dtype=images[0].dtype, device=device)
         for i, img in enumerate(images):
             c, h, w = img.shape
-            pixel_values[i, :, :h, :w] = img.to(device)
+            pixel_values[i, :, :h, :w] = img.to(device, non_blocking=nb)
 
         hf_targets = []
         for t in targets:
-            boxes = t["boxes"].to(device)
-            labels = t["labels"].to(device)
-            size = t["size"].to(device)
+            boxes = t["boxes"].to(device, non_blocking=nb)
+            labels = t["labels"].to(device, non_blocking=nb)
+            size = t["size"].to(device, non_blocking=nb)
 
             if len(boxes) > 0:
                 h_val, w_val = size[0].item(), size[1].item()
