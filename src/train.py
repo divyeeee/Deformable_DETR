@@ -199,6 +199,11 @@ def main():
     print("Starting training loop...")
     for epoch in range(start_epoch, epochs + 1):
         print(f"\n--- Epoch {epoch}/{epochs} ---")
+
+        if use_cuda:
+            torch.cuda.reset_peak_memory_stats(device)
+            torch.cuda.synchronize(device)
+
         train_loss, train_time = train_one_epoch(
             model=model,
             dataloader=train_loader,
@@ -210,10 +215,18 @@ def main():
             scaler=scaler,
         )
 
+        if use_cuda:
+            torch.cuda.synchronize(device)
+            peak_alloc_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+            peak_res_mb = torch.cuda.max_memory_reserved(device) / (1024 ** 2)
+
         should_eval = (epoch % eval_interval == 0) or (epoch == epochs)
         eval_metrics = {}
+        eval_time = 0.0
 
         if should_eval:
+            if use_cuda:
+                torch.cuda.synchronize(device)
             eval_metrics, eval_time = evaluate_one_epoch(
                 model=model,
                 dataloader=test_loader,
@@ -222,10 +235,21 @@ def main():
                 epoch=epoch,
                 max_batches=args.max_batches,
             )
+            if use_cuda:
+                torch.cuda.synchronize(device)
             val_map = eval_metrics.get("AP", 0.0)
             print(f"Epoch {epoch} Results - Train Loss: {train_loss:.4f}, Val mAP: {val_map:.4f}")
         else:
             print(f"Epoch {epoch} Results - Train Loss: {train_loss:.4f} (Evaluation skipped for interval={eval_interval})")
+
+        total_time = train_time + eval_time
+        if use_cuda:
+            print(
+                f"Epoch {epoch} Timing - Train: {train_time:.2f}s, Eval: {eval_time:.2f}s, Total: {total_time:.2f}s | "
+                f"Peak Training VRAM - Allocated: {peak_alloc_mb:.2f} MB, Reserved: {peak_res_mb:.2f} MB"
+            )
+        else:
+            print(f"Epoch {epoch} Timing - Train: {train_time:.2f}s, Eval: {eval_time:.2f}s, Total: {total_time:.2f}s")
 
         # Save latest checkpoint
         checkpoint_path = os.path.join(args.save_dir, latest_ckpt_name)
