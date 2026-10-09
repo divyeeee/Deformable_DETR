@@ -171,6 +171,14 @@ def main():
     builder = MODEL_BUILDERS[args.model]
     model = builder(num_classes=num_classes, pretrained=True)
 
+    if args.model == "deformable_detr":
+        if hasattr(model, "model") and hasattr(model.model, "backbone"):
+            for p in model.model.backbone.parameters():
+                p.requires_grad = False
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Freezing backbone for '{args.model}'. Total parameters: {total_params:,} | Trainable parameters: {trainable_params:,}")
+
     optimizer = build_optimizer_from_config(model, args.model, exp_config)
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
 
