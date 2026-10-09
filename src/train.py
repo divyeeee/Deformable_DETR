@@ -137,6 +137,8 @@ def main():
     print(f"Device: {device}")
     print(f"Model: {args.model}")
     print(f"Seed: {seed}, Epochs: {epochs}, Batch Size: {batch_size}, Num Workers: {num_workers}, Eval Interval: {eval_interval}, Max Batches: {args.max_batches}")
+    if args.max_batches is not None:
+        print(f"[Smoke Test / Partial Run] --max-batches={args.max_batches} enabled. Epochs and saved checkpoints will be partial artifacts.")
 
     run_name = f"{args.model}_seed{seed}"
     init_run(
@@ -189,12 +191,21 @@ def main():
     if args.resume:
         print(f"Resuming training from checkpoint: {args.resume}")
         resumed_epoch, last_metrics = load_checkpoint(args.resume, model, optimizer, device=device, scaler=scaler)
-        start_epoch = resumed_epoch + 1
+        is_partial = last_metrics.get("is_partial", False) or (args.max_batches is not None)
         best_map = last_metrics.get("AP", 0.0)
-        print(f"Resumed from epoch {resumed_epoch}. Next epoch: {start_epoch} (Best mAP so far: {best_map:.4f})")
+        if is_partial:
+            start_epoch = resumed_epoch
+            print(f"[Smoke-Test Checkpoint] Resumed partial checkpoint at epoch {resumed_epoch}. Re-running epoch {start_epoch} from start (note: batch-level sampler state is not preserved). Best mAP so far: {best_map:.4f}")
+        else:
+            start_epoch = resumed_epoch + 1
+            print(f"Resumed from completed epoch {resumed_epoch}. Next epoch: {start_epoch} (Best mAP so far: {best_map:.4f})")
 
-    latest_ckpt_name = f"{args.model}_seed{seed}_latest.pth"
-    best_ckpt_name = f"{args.model}_seed{seed}_best.pth"
+    if args.max_batches is not None:
+        latest_ckpt_name = f"{args.model}_seed{seed}_smoke_latest.pth"
+        best_ckpt_name = f"{args.model}_seed{seed}_smoke_best.pth"
+    else:
+        latest_ckpt_name = f"{args.model}_seed{seed}_latest.pth"
+        best_ckpt_name = f"{args.model}_seed{seed}_best.pth"
 
     print("Starting training loop...")
     for epoch in range(start_epoch, epochs + 1):
@@ -241,6 +252,10 @@ def main():
             print(f"Epoch {epoch} Results - Train Loss: {train_loss:.4f}, Val mAP: {val_map:.4f}")
         else:
             print(f"Epoch {epoch} Results - Train Loss: {train_loss:.4f} (Evaluation skipped for interval={eval_interval})")
+
+        if args.max_batches is not None:
+            eval_metrics["is_partial"] = True
+            eval_metrics["max_batches"] = args.max_batches
 
         total_time = train_time + eval_time
         if use_cuda:
