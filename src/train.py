@@ -9,6 +9,7 @@ from src.datasets.build import (
     build_train_dataset,
     build_test_dataset,
     build_dataloader,
+    ExplicitIndexSampler,
 )
 from src.models import (
     build_faster_rcnn,
@@ -112,6 +113,18 @@ def parse_args():
         default=1,
         help="Evaluation interval in epochs (default: 1)",
     )
+    parser.add_argument(
+        "--recovery-dir",
+        type=str,
+        default="/content/checkpoints" if os.path.exists("/content") else None,
+        help="Directory to save mid-epoch recovery checkpoints (default: /content/checkpoints if on Colab, else save-dir)",
+    )
+    parser.add_argument(
+        "--save-freq",
+        type=int,
+        default=500,
+        help="Batch frequency for saving mid-epoch recovery checkpoints (default: 500)",
+    )
     return parser.parse_args()
 
 
@@ -154,13 +167,6 @@ def main():
     test_dataset = build_test_dataset()
 
     use_cuda = (device.type == "cuda")
-    train_loader = build_dataloader(
-        train_dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        shuffle=True,
-        use_cuda=use_cuda,
-    )
     test_loader = build_dataloader(
         test_dataset,
         batch_size=batch_size,
@@ -186,34 +192,83 @@ def main():
 
     os.makedirs(args.save_dir, exist_ok=True)
     start_epoch = 1
+    start_batch_idx = 0
+    saved_epoch_indices = None
     best_map = 0.0
 
     if args.resume:
         print(f"Resuming training from checkpoint: {args.resume}")
-        resumed_epoch, last_metrics = load_checkpoint(args.resume, model, optimizer, device=device, scaler=scaler)
+        resumed_epoch, last_metrics, resumed_batch_idx, saved_epoch_indices = load_checkpoint(
+            args.resume, model, optimizer, device=device, scaler=scaler
+        )
         is_partial = last_metrics.get("is_partial", False) or (args.max_batches is not None)
         best_map = last_metrics.get("AP", 0.0)
-        if is_partial:
+
+        if resumed_batch_idx > 0:
             start_epoch = resumed_epoch
-            print(f"[Smoke-Test Checkpoint] Resumed partial checkpoint at epoch {resumed_epoch}. Re-running epoch {start_epoch} from start (note: batch-level sampler state is not preserved). Best mAP so far: {best_map:.4f}")
+            start_batch_idx = resumed_batch_idx
+            print(
+                f"[Recovery Checkpoint] Resuming epoch {start_epoch} from batch {start_batch_idx} "
+                f"using exact restored epoch permutation (note: batch position is restored; sampler/RNG state is not saved). Best mAP so far: {best_map:.4f}"
+            )
+        elif is_partial:
+            start_epoch = resumed_epoch
+            start_batch_idx = 0
+            print(
+                f"[Smoke-Test Checkpoint] Resumed partial checkpoint at epoch {resumed_epoch}. "
+                f"Re-running epoch {start_epoch} from start (note: batch-level sampler state is not preserved). Best mAP so far: {best_map:.4f}"
+            )
         else:
             start_epoch = resumed_epoch + 1
+            start_batch_idx = 0
             print(f"Resumed from completed epoch {resumed_epoch}. Next epoch: {start_epoch} (Best mAP so far: {best_map:.4f})")
 
     if args.max_batches is not None:
         latest_ckpt_name = f"{args.model}_seed{seed}_smoke_latest.pth"
         best_ckpt_name = f"{args.model}_seed{seed}_smoke_best.pth"
+        recovery_ckpt_name = f"{args.model}_seed{seed}_smoke_recovery.pth"
     else:
         latest_ckpt_name = f"{args.model}_seed{seed}_latest.pth"
         best_ckpt_name = f"{args.model}_seed{seed}_best.pth"
+        recovery_ckpt_name = f"{args.model}_seed{seed}_recovery.pth"
+
+    best_ckpt_path = os.path.join(args.save_dir, best_ckpt_name)
+    if os.path.exists(best_ckpt_path):
+        try:
+            _, best_ckpt_metrics, _, _ = load_checkpoint(best_ckpt_path, model)
+            existing_best = best_ckpt_metrics.get("AP", 0.0)
+            if existing_best > best_map:
+                best_map = existing_best
+        except Exception:
+            pass
+
+    recovery_dir = args.recovery_dir if args.recovery_dir is not None else args.save_dir
+    os.makedirs(recovery_dir, exist_ok=True)
+    recovery_filepath = os.path.join(recovery_dir, recovery_ckpt_name)
 
     print("Starting training loop...")
     for epoch in range(start_epoch, epochs + 1):
         print(f"\n--- Epoch {epoch}/{epochs} ---")
 
+        if epoch == start_epoch and saved_epoch_indices is not None:
+            epoch_indices = saved_epoch_indices
+        else:
+            epoch_indices = torch.randperm(len(train_dataset)).tolist()
+
+        train_sampler = ExplicitIndexSampler(epoch_indices)
+        train_loader = build_dataloader(
+            train_dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            sampler=train_sampler,
+            use_cuda=use_cuda,
+        )
+
         if use_cuda:
             torch.cuda.reset_peak_memory_stats(device)
             torch.cuda.synchronize(device)
+
+        current_start_batch = start_batch_idx if epoch == start_epoch else 0
 
         train_loss, train_time = train_one_epoch(
             model=model,
@@ -224,6 +279,10 @@ def main():
             epoch=epoch,
             max_batches=args.max_batches,
             scaler=scaler,
+            start_batch_idx=current_start_batch,
+            save_freq=args.save_freq,
+            recovery_filepath=recovery_filepath,
+            epoch_indices=epoch_indices,
         )
 
         if use_cuda:
@@ -289,6 +348,13 @@ def main():
                 scaler=scaler,
             )
             print(f"Saved new best model checkpoint to {best_ckpt_path} (mAP: {best_map:.4f})")
+
+        # Clean up stale mid-epoch recovery checkpoint once full-epoch latest checkpoint is saved
+        if os.path.exists(recovery_filepath):
+            try:
+                os.remove(recovery_filepath)
+            except OSError:
+                pass
 
 
     finish_run()

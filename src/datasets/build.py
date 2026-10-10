@@ -1,9 +1,23 @@
 import os
 import yaml
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 
 from src.datasets.voc import VOCDataset, collate_fn
 from src.datasets.transforms import get_train_transforms, get_test_transforms
+
+
+class ExplicitIndexSampler(Sampler):
+    """
+    Yields dataset indices in the exact explicit sequence provided without reshuffling.
+    """
+    def __init__(self, indices):
+        self.indices = indices
+
+    def __iter__(self):
+        return iter(self.indices)
+
+    def __len__(self):
+        return len(self.indices)
 
 
 def load_voc_config(config_path="configs/voc.yaml"):
@@ -55,18 +69,19 @@ def build_test_dataset(config_path="configs/voc.yaml"):
     )
 
 
-
-def build_dataloader(dataset, batch_size=4, num_workers=2, shuffle=False, use_cuda=False):
+def build_dataloader(dataset, batch_size=4, num_workers=2, shuffle=False, use_cuda=False, sampler=None):
     """
     Build PyTorch DataLoader using custom collate_fn for variable box target tuples.
 
+    When sampler is provided, shuffle is disabled (shuffle=False).
     When use_cuda=True, enables pin_memory for faster CPU→GPU transfers.
     When num_workers > 0, enables persistent_workers and prefetch_factor=2.
     """
     loader_kwargs = {
         "dataset": dataset,
         "batch_size": batch_size,
-        "shuffle": shuffle,
+        "shuffle": False if sampler is not None else shuffle,
+        "sampler": sampler,
         "num_workers": num_workers,
         "collate_fn": collate_fn,
         "pin_memory": use_cuda,

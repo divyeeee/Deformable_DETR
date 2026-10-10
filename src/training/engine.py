@@ -221,9 +221,23 @@ def prepare_batch(model_type, images, targets, device):
         raise ValueError(f"Unknown model_type: {model_type}")
 
 
-def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch=0, max_batches=None, scaler=None):
+def train_one_epoch(
+    model,
+    dataloader,
+    optimizer,
+    model_type,
+    device=None,
+    epoch=0,
+    max_batches=None,
+    scaler=None,
+    start_batch_idx=0,
+    save_freq=500,
+    recovery_filepath=None,
+    epoch_indices=None,
+):
     """
     Train model for one epoch using optional CUDA mixed precision.
+    Supports resuming from start_batch_idx and saving mid-epoch recovery checkpoints.
     """
     if device is None:
         device = get_device()
@@ -239,7 +253,10 @@ def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch
     num_batches = 0
     start_time = time.time()
 
-    for images, targets in dataloader:
+    for batch_idx, (images, targets) in enumerate(dataloader, start=1):
+        if start_batch_idx > 0 and batch_idx <= start_batch_idx:
+            continue
+
         if max_batches is not None and num_batches >= max_batches:
             break
 
@@ -264,6 +281,18 @@ def train_one_epoch(model, dataloader, optimizer, model_type, device=None, epoch
 
         total_loss += losses.item()
         num_batches += 1
+
+        if recovery_filepath and save_freq > 0 and (batch_idx % save_freq == 0):
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                filepath=recovery_filepath,
+                metrics={"train_loss": total_loss / max(1, num_batches)},
+                scaler=scaler,
+                batch_idx=batch_idx,
+                epoch_indices=epoch_indices,
+            )
 
     elapsed = time.time() - start_time
     avg_loss = total_loss / max(1, num_batches)
@@ -355,30 +384,58 @@ def evaluate_one_epoch(model, dataloader, model_type, device=None, epoch=0, max_
     return metrics, elapsed
 
 
-def save_checkpoint(model, optimizer, epoch, filepath, metrics=None, scaler=None):
+def save_checkpoint(model, optimizer, epoch, filepath, metrics=None, scaler=None, batch_idx=None, epoch_indices=None):
     """
-    Save checkpoint dictionary to disk.
+    Save checkpoint dictionary to disk atomically. Preserves model, optimizer, scaler,
+    epoch_indices, batch_idx, and RNG states (Python, NumPy, PyTorch CPU, and CUDA).
     """
+    import random
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    rng_state = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        try:
+            rng_state["torch_cuda"] = torch.cuda.get_rng_state_all()
+        except Exception:
+            pass
+
     state = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "metrics": metrics or {},
+        "rng_state": rng_state,
     }
+    if batch_idx is not None:
+        state["batch_idx"] = batch_idx
+    if epoch_indices is not None:
+        state["epoch_indices"] = epoch_indices
     if scaler is not None and hasattr(scaler, "state_dict"):
         state["scaler_state_dict"] = scaler.state_dict()
-    torch.save(state, filepath)
+
+    tmp_filepath = filepath + ".tmp"
+    torch.save(state, tmp_filepath)
+    os.replace(tmp_filepath, filepath)
 
 
 def load_checkpoint(filepath, model, optimizer=None, device=None, scaler=None):
     """
     Load checkpoint dictionary from disk into model, optional optimizer, and optional GradScaler.
+    Restores RNG states (Python, NumPy, PyTorch CPU, and CUDA).
     Move all optimizer state tensors to the specified target device.
+    Returns (epoch, metrics, batch_idx, epoch_indices).
     """
+    import random
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Checkpoint not found at: {filepath}")
-    checkpoint = torch.load(filepath, map_location="cpu")
+    checkpoint = torch.load(
+        filepath,
+        map_location="cpu",
+        weights_only=False,
+    )
     model.load_state_dict(checkpoint["model_state_dict"])
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -393,6 +450,35 @@ def load_checkpoint(filepath, model, optimizer=None, device=None, scaler=None):
                     state[k] = v.to(device)
     if scaler is not None and "scaler_state_dict" in checkpoint and hasattr(scaler, "load_state_dict"):
         scaler.load_state_dict(checkpoint["scaler_state_dict"])
-    return checkpoint.get("epoch", 0), checkpoint.get("metrics", {})
+
+    if "rng_state" in checkpoint:
+        rng_state = checkpoint["rng_state"]
+        if "python" in rng_state:
+            try:
+                random.setstate(rng_state["python"])
+            except Exception:
+                pass
+        if "numpy" in rng_state:
+            try:
+                np.random.set_state(rng_state["numpy"])
+            except Exception:
+                pass
+        if "torch_cpu" in rng_state:
+            try:
+                torch.set_rng_state(rng_state["torch_cpu"])
+            except Exception:
+                pass
+        if "torch_cuda" in rng_state and torch.cuda.is_available():
+            try:
+                torch.cuda.set_rng_state_all(rng_state["torch_cuda"])
+            except Exception:
+                pass
+
+    return (
+        checkpoint.get("epoch", 0),
+        checkpoint.get("metrics", {}),
+        checkpoint.get("batch_idx", 0),
+        checkpoint.get("epoch_indices", None),
+    )
 
 
